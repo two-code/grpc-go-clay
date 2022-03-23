@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/utrack/clay/v3/server/middlewares/mwhttp"
 	"github.com/utrack/clay/v3/transport"
@@ -15,37 +16,15 @@ import (
 type Option func(*serverOpts)
 
 type serverOpts struct {
-	RPCPort int
-	// If HTTPPort is the same then muxing listener is created.
-	HTTPPort int
-	HTTPMux  transport.Router
-
-	HTTPMiddlewares []func(http.Handler) http.Handler
-
-	GRPCOpts             []grpc.ServerOption
-	GRPCUnaryInterceptor grpc.UnaryServerInterceptor
+	HTTPMux                 transport.Router
+	GRPCUnaryInterceptor    grpc.UnaryServerInterceptor
+	HTTPMiddlewares         []func(http.Handler) http.Handler
+	HTTPShutdownWaitTimeout time.Duration
 }
 
-func defaultServerOpts(mainPort int) *serverOpts {
+func defaultServerOpts() *serverOpts {
 	return &serverOpts{
-		RPCPort:  mainPort,
-		HTTPPort: mainPort,
-		HTTPMux:  chi.NewMux(),
-	}
-}
-
-// WithGRPCOpts sets gRPC server options.
-func WithGRPCOpts(opts []grpc.ServerOption) Option {
-	return func(o *serverOpts) {
-		o.GRPCOpts = append(o.GRPCOpts, opts...)
-	}
-}
-
-// WithHTTPPort sets HTTP RPC port to listen on.
-// Set same port as main to use single port.
-func WithHTTPPort(port int) Option {
-	return func(o *serverOpts) {
-		o.HTTPPort = port
+		HTTPMux: chi.NewMux(),
 	}
 }
 
@@ -60,19 +39,17 @@ func WithHTTPMiddlewares(mws ...mwhttp.Middleware) Option {
 	}
 }
 
+func WithHTTPShutdownWaitTimeout(timeout time.Duration) Option {
+	return func(o *serverOpts) {
+		o.HTTPShutdownWaitTimeout = timeout
+	}
+}
+
 // WithGRPCUnaryMiddlewares sets up unary middlewares for gRPC server.
 func WithGRPCUnaryMiddlewares(mws ...grpc.UnaryServerInterceptor) Option {
 	mw := grpc_middleware.ChainUnaryServer(mws...)
 	return func(o *serverOpts) {
-		o.GRPCOpts = append(o.GRPCOpts, grpc.UnaryInterceptor(mw))
 		o.GRPCUnaryInterceptor = mw
-	}
-}
-
-// WithGRPCStreamMiddlewares sets up stream middlewares for gRPC server.
-func WithGRPCStreamMiddlewares(mws ...grpc.StreamServerInterceptor) Option {
-	return func(o *serverOpts) {
-		o.GRPCOpts = append(o.GRPCOpts, grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(mws...)))
 	}
 }
 

@@ -2,7 +2,6 @@ package transport
 
 import (
 	"github.com/utrack/clay/v3/transport/swagger"
-	"google.golang.org/grpc"
 )
 
 type CompoundServiceDesc struct {
@@ -11,12 +10,6 @@ type CompoundServiceDesc struct {
 
 func NewCompoundServiceDesc(desc ...ServiceDesc) *CompoundServiceDesc {
 	return &CompoundServiceDesc{svc: desc}
-}
-
-func (d *CompoundServiceDesc) RegisterGRPC(g *grpc.Server) {
-	for _, svc := range d.svc {
-		svc.RegisterGRPC(g)
-	}
 }
 
 func (d *CompoundServiceDesc) RegisterHTTP(r Router) {

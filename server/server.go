@@ -2,27 +2,28 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 
+	"github.com/go-chi/chi"
+	"github.com/utrack/clay/v3/server/log"
 	"github.com/utrack/clay/v3/transport"
-
-	"github.com/pkg/errors"
 )
 
 // Server is a transport server.
 type Server struct {
-	opts      *serverOpts
-	listeners *listenerSet
-	srv       *serverSet
+	opts *serverOpts
 }
 
-// NewServer creates a Server listening on the rpcPort.
+// NewServer creates a Server.
 // Pass additional Options to mutate its behaviour.
-// By default, HTTP JSON handler and gRPC are listening on the same
-// port, admin port is p+2 and profile port is p+4.
-func NewServer(rpcPort int, opts ...Option) *Server {
-	serverOpts := defaultServerOpts(rpcPort)
+//
+func NewServer(opts ...Option) *Server {
+	serverOpts := defaultServerOpts()
 	for _, opt := range opts {
 		opt(serverOpts)
 	}
@@ -31,56 +32,95 @@ func NewServer(rpcPort int, opts ...Option) *Server {
 
 // Run starts processing requests to the service.
 // It blocks indefinitely, run asynchronously to do anything after that.
+//
+// Deprecated: Call Serve method instead.
 func (s *Server) Run(svc transport.Service) error {
-	desc := svc.GetDescription()
+	return fmt.Errorf("not supported any more; use Serve method")
+}
 
-	var err error
-	s.listeners, err = newListenerSet(s.opts)
-	if err != nil {
-		return errors.Wrap(err, "couldn't create listeners")
+func initializeHttpRouter(desc transport.ServiceDesc, opts *serverOpts) chi.Router {
+	router := chi.NewMux()
+
+	if len(opts.HTTPMiddlewares) > 0 {
+		router.Use(opts.HTTPMiddlewares...)
 	}
 
-	s.srv = newServerSet(s.listeners, s.opts)
-	// Inject static Swagger as root handler
-	s.srv.http.HandleFunc("/swagger.json", func(w http.ResponseWriter, req *http.Request) {
-		io.Copy(w, bytes.NewReader(desc.SwaggerDef()))
-	})
+	router.Mount("/", opts.HTTPMux)
+
+	router.HandleFunc(
+		"/swagger.json",
+		func(w http.ResponseWriter, req *http.Request) {
+			_, _ = io.Copy(w, bytes.NewReader(desc.SwaggerDef()))
+		})
+
+	return router
+}
+
+func (s *Server) Serve(
+	stopCtx context.Context,
+	desc transport.ServiceDesc,
+	httpListener net.Listener,
+	logCb func(ctx context.Context, lvl log.Level, msg string),
+) (err error) {
+	httpRouter := initializeHttpRouter(desc, s.opts)
 
 	// apply gRPC interceptor
-	if d, ok := desc.(transport.ConfigurableServiceDesc); ok {
-		d.Apply(transport.WithUnaryInterceptor(s.opts.GRPCUnaryInterceptor))
+	//
+	if configurableServiceDesc, ok := desc.(transport.ConfigurableServiceDesc); ok {
+		configurableServiceDesc.Apply(transport.WithUnaryInterceptor(s.opts.GRPCUnaryInterceptor))
 	}
 
-	// Register everything
-	desc.RegisterHTTP(s.srv.http)
-	desc.RegisterGRPC(s.srv.grpc)
+	// register HTTP.
+	//
+	desc.RegisterHTTP(httpRouter)
 
-	return s.run()
-}
-
-func (s *Server) run() error {
-	errChan := make(chan error, 5)
-
-	if s.listeners.mainListener != nil {
-		go func() {
-			err := s.listeners.mainListener.Serve()
-			errChan <- err
-		}()
+	httpServer := &http.Server{
+		Handler: httpRouter,
 	}
+
+	shutdownCtx, shutdownCtxCancel := context.WithCancel(stopCtx)
+
+	shutdownChErr := make(chan error, 1)
+	defer close(shutdownChErr)
+
 	go func() {
-		err := http.Serve(s.listeners.HTTP, s.srv.http)
-		errChan <- err
-	}()
-	go func() {
-		err := s.srv.grpc.Serve(s.listeners.GRPC)
-		errChan <- err
+		<-shutdownCtx.Done()
+
+		if logCb != nil {
+			logCb(stopCtx, log.LevelInfo, fmt.Sprintf("attempt to stop HTTP-server gracefully on %s ...", httpListener.Addr()))
+		}
+
+		if s.opts.HTTPShutdownWaitTimeout == -1 {
+			shutdownChErr <- httpServer.Shutdown(context.Background())
+
+			return
+		}
+
+		waitCtx, waitCtxCancel := context.WithTimeout(context.Background(), s.opts.HTTPShutdownWaitTimeout)
+		defer waitCtxCancel()
+
+		shutdownChErr <- httpServer.Shutdown(waitCtx)
 	}()
 
-	return <-errChan
-}
+	if logCb != nil {
+		logCb(stopCtx, log.LevelInfo, fmt.Sprintf("start serving HTTP-server on %s ...", httpListener.Addr()))
+	}
 
-// Stop stops the server gracefully.
-func (s *Server) Stop() {
-	// TODO grace HTTP
-	s.srv.grpc.GracefulStop()
+	serveErr := httpServer.Serve(httpListener)
+	if !errors.Is(serveErr, http.ErrServerClosed) {
+		err = fmt.Errorf("error while serving HTTP-server on %s; err: %w", httpListener.Addr(), serveErr)
+	}
+
+	shutdownCtxCancel()
+
+	shutdownErr := <-shutdownChErr
+	if shutdownErr != nil {
+		if err == nil {
+			err = fmt.Errorf("error while shuting down HTTP-server on %s; err: %w", httpListener.Addr(), shutdownErr)
+		} else {
+			err = fmt.Errorf("%s; %w", err, shutdownErr)
+		}
+	}
+
+	return
 }

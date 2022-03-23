@@ -28,7 +28,6 @@ func main() {
 
 	impl := sum.NewSummator()
 	srv := server.NewServer(
-		12345,
 		// Pass our mux with Swagger UI
 		server.WithHTTPMux(hmux),
 		// Recover from both HTTP and gRPC panics and use our own middleware
