@@ -91,6 +91,8 @@ func (s *Server) Serve(
 		}
 
 		if s.opts.HTTPShutdownWaitTimeout == -1 {
+			// infinite timeout.
+			//
 			shutdownChErr <- httpServer.Shutdown(context.Background())
 
 			return
@@ -107,7 +109,7 @@ func (s *Server) Serve(
 	}
 
 	serveErr := httpServer.Serve(httpListener)
-	if !errors.Is(serveErr, http.ErrServerClosed) {
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		err = fmt.Errorf("error while serving HTTP-server on %s; err: %w", httpListener.Addr(), serveErr)
 	}
 
@@ -116,7 +118,7 @@ func (s *Server) Serve(
 	shutdownErr := <-shutdownChErr
 	if shutdownErr != nil {
 		if err == nil {
-			err = fmt.Errorf("error while shuting down HTTP-server on %s; err: %w", httpListener.Addr(), shutdownErr)
+			err = fmt.Errorf("error while shutting down HTTP-server on %s; err: %w", httpListener.Addr(), shutdownErr)
 		} else {
 			err = fmt.Errorf("%s; %w", err, shutdownErr)
 		}
